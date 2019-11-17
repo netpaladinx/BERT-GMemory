@@ -1,1 +1,1 @@
-# BERT-GMemory
+# BERT-Induced Graph Memory
