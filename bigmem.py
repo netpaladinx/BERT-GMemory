@@ -7,110 +7,109 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# ... x (1+K) x H x D1 -> ... x (H*D2)
-class MultiHeadedAttention(nn.Module):
-    def __init__(self, n_tars, n_heads=1, output_value=True):
-        super(MultiHeadedAttention, self).__init__()
 
+def sparse_op1(indices1, values1, indices2, values2, N1, N2):
+    """ indices1: (LongTensor) D1 x D2 x D3 x K1 (K1 out of N1)
+        values1: (FloatTensor) D1 x D2 x D3 x K1 (K1 out of N1)
+        indices2: (LongTensor) D3 x N1 x K2 (K2 out of N2)
+        values2: (FloatTensor) D3 x N1 x K2 (K2 out of N2)
+        (return) out: (tensor) D1 x D2 x K2
+    """
+    indices = []
+    values = []
+    for ind1, val1, ind2, val2 in zip(indices1.unbind(dim=2), values1.unbind(dim=2),  # D1 x D2 x K1
+                                      indices2.unbind(dim=0), values2.unbind(dim=0)):  # N1 x K2
+        V1 = val1.unsqueeze(-1)  # D1 x D2 x K1 x 1
+        V2 = val2.index_select(0, ind1.reshape(-1)).reshape(ind1.size() + (ind2.size(-1),))  # D1 x D2 x K1 x K2
+        V = V1 * V2  # D1 x D2 x K1 x K2
+        values.append(V.reshape(-1))  # (D1*D2*K1*K2)
 
-    def forward(self, source, target):
-        """ source: ... x n_heads x n_dims
-            target: ... x n_tars x n_heads x n_dims
-            (return): attn: ... x n_heads x n_tars
-            (return) value: ... x n_heads x (n_heads*n_dims_sm)
-        """
+        I_D1 = torch.arange(ind1.size(0)).reshape(-1, 1, 1, 1).repeat(1, ind1.size(1), ind1.size(2), ind2.size(-1))  # D1 x D2 x K1 x K2
+        I_D2 = torch.arange(ind1.size(1)).reshape(1, -1, 1, 1).repeat(ind1.size(0), 1, ind1.size(2), ind2.size(-1))  # D1 x D2 x K1 x K2
+        I_K1 = ind1.unsqueeze(-1).repeat(1, 1, 1, ind2.size(-1))  # D1 x D2 x K1 x K2
+        I_K2 = ind2.index_select(0, ind1.reshape(-1)).reshape(ind1.size() + (ind2.size(-1),))  # D1 x D2 x K1 x K2
+        I = torch.stack([I_D1, I_D2, I_K1, I_K2], dim=0)  # 4 x D1 x D2 x K1 x K2
+        indices.append(I.reshape(4, -1))  # 4 x (D1*D2*K1*k2)
 
+    indices = torch.cat(indices, dim=1)  # 4 x (D3*D1*D2*K1*K2)
+    values = torch.cat(values, dim=0)  # (D3*D1*D2*K1*K2)
+    out = torch.sparse_coo_tensor(indices, values,
+                                  size=(indices1.size(0), indices1.size(1), N1, N2)).coalesce()  # (sparse) D1 x D2 x N1 x N2
 
+    
 
-def topk_mask(input, k, dim=-1):
-    _, indices = torch.topk(input, k, dim=dim, sorted=False)
-    mask = torch.zeros_like(input).scatter_(dim, indices, 1.)
-    return mask
-
-
-def masked_softmax(input, mask, dim=-1):
-    input = input - torch.max(input, dim, keepdim=True)[0]
-    exp = torch.exp(input) * mask
-    sum = torch.sum(exp, dim, keepdim=True)
-    softmax = exp / sum
-    return softmax
-
-
-def split_into_sparse_tensors(indices, values, sparse_size, dim=0):
-    sp_tensors = []
-    rest_dims = [d for d in range(indices.size(0)) if d != dim]
-    for i in range(sparse_size[dim]):
-        col_mask = (indices[dim] == i)
-        ind = indices[rest_dims][:, col_mask]
-        val = values[col_mask]
-        sp = torch.sparse_coo_tensor(ind, val, size=list(sparse_size) + list(values.size())[1:]).coalesce()
-        sp_tensors.append(sp)
-    return sp_tensors
 
 
 class BIGMem(nn.Module):
-    def __init__(self,
+    def __init__(self, hidden_dims=768,
                  index_groups=5, per_group_indices=200, index_dims=64,
                  memory_nodes=100000, memory_dims=768,
-                 device=None,
-
-                 dot_product_mode='scaled_dot'):
-        """ anchor_dot: 'scaled_dot' or 'unit_key'
-        """
+                 epsilon=1e08):
         super(BIGMem, self).__init__()
+        self.hidden_dims = hidden_dims
         self.index_groups = index_groups
         self.per_group_indices = per_group_indices
         self.index_dims = index_dims
         self.memory_nodes = memory_nodes
-        self.device = device
+        self.memory_dims = memory_dims
+        self.epsilon = epsilon
 
-        self.index_keys = nn.Parameter(torch.empty(self.n_inode_groups, self.n_pgroup_inodes, self.n_inode_key_dims,
-                                                   dtype=torch.float32, device=self.device))
-        self.index_pointers = nn.Parameter()
+        self.index_graph = IndexGraph()
+        self.memory_graph = MemoryGraph()
+
+        self.index_keys = nn.Parameter(torch.empty(self.index_groups, self.per_group_indices, self.index_dims))
+        self.index_graph_weights = nn.Parameter(torch.empty(self.index_groups, self.per_group_indices,
+                                                            self.memory_nodes // self.per_group_indices))
+
+        self.memory_embeddings =
+        self.memory_graph_weights
+
+        self.fn_elem_queries = nn.Linear(self.hidden_dims, self.index_groups * self.index_dims)
 
         nn.init.normal_(self.index_keys, std=0.01)
 
+        with torch.no_grad():
+            self.index_graph_weights.copy_(torch.from_numpy(self.index_graph.weights).to(self.index_graph_weights))
+
+        self.memory_from_index = []
+        self.memory_from_memory = []
+
+    def initialize_memory_from_index(self):
+        """ memory_from_index: (list of sparse tensor) (memory_from_index[g]: memory_nodes x per_group_indices)
+        """
+        weights = self.index_graph_weights / self.index_graph_weights.sum(-1, keepdim=True).clamp_min(1e-8)
+        weights = weights.reshape(self.index_groups, self.memory_nodes)
+        edges_m_from_i = torch.from_numpy(self.index_graph.edges_m_from_i).to(device=weights.device)
+        self.memory_from_index = [torch.sparse_coo_tensor(edges_m_from_i[g], weights[g],
+                                                          size=(self.memory_nodes, self.per_group_indices))
+                                  for g in range(self.index_groups)]
+
+    def initialize_memory_from_memory(self):
 
 
-        self.n_nodes = n_nodes
-        self.n_edges = int(n_nodes ** 2 * density)
-        self.n_rels = n_rels
-        self.anchor_dot = anchor_dot
-        self.anchor_k = anchor_k
 
-        self._node_keys = nn.Parameter(torch.empty(n_nodes, n_dims_sm, dtype=torch.float32, device=device))  # n_nodes x n_indices x n_dims_sm (10.24M)
-
-        self._adjacency_values = nn.Parameter(torch.empty(self.n_edges, dtype=torch.float32, device=device))  # n_edges
-        self._node_embeddings = nn.Parameter(torch.empty(n_nodes, n_node_emb_dims, dtype=torch.float32, device=device))
-
-        self.register_buffer('_adjacency_indices',
-                             torch.empty(3, self.n_edges, dtype=torch.int64, device=device))  # 3 x n_edges, (rel, node1, node2)
-        self.register_buffer('_adjacency',
-                             torch.rand(n_rels, n_nodes, n_nodes, dtype=torch.float32, device='cpu'))  # n_rels x n_nodes x n_nodes
-
-
-
-        nn.init.normal_(self._keys, std=0.01)
-        self.reset_adjacency()
 
     def forward(self, *args, **kwargs):
         pass
 
-    def anchor(self, elem_reprs, k=None):
-        """ elem_reprs: B x n_elems x n_dims
-            (return) mapping: B x n_elems x n_nodes
+    def anchor(self, elem_hiddens):
+        """ elem_hiddens: B x n_elems x hidden_dims
+            (return) elem_to_memory: B x n_elems x index_groups x per_group_indices
         """
-        # B x n_elems x n_dims => B x n_elems x (n_indices*n_dims_sm) => B x n_elems x n_indices x n_dims_sm
+        # elem_hiddens => elem_queries (B x n_elems x index_groups x index_dims)
+        elem_queries = self.fn_elem_queries(elem_hiddens)  # B x n_elems x (index_groups*index_dims)
+        elem_queries = torch.reshape(elem_queries, (elem_queries.size(0), elem_queries.size(1),
+                                                    self.index_groups, self.index_dims))
 
-        # B x n_elems x n_indices x n_dims_sm, n_nodes x n_indices x n_dims_sm => B x n_elems x n_indices x n_nodes
+        # elem_queries, index_keys (index_groups x per_group_indices x index_dims)
+        #   => elem_to_index (B x n_elems x index_groups x per_group_indices)
+        elem_to_index = torch.matmul(elem_queries.unsqueeze(3), self.index_keys.transpose(1, 2)).squeeze(3)
+        elem_to_index = elem_to_index / math.sqrt(self.index_dims)
+        elem_to_index = torch.softmax(elem_to_index, 3)
 
-        # B x n_elems x n_indices x n_nodes => B x n_elems x n_nodes
-
-        mapping = torch.matmul(elem_queries, self.keys.t())  # B x n_elems x n_nodes
-        k = k or self.anchor_k
-        mask = topk_mask(mapping.detach(), k)  # B x n_elems x n_nodes
-        mapping = masked_softmax(mapping, mask)  # B x n_elems x n_nodes
-        return mapping
+        # elem_to_index, memory_from_index (memory_nodes x per_group_indices) => memory_from_elem (memory_nodes x n_elems)
+        elem_to_memory = [torch.sparse.mm(self.memory_from_index[g], )
+                          for g in range(self.index_groups)]
 
     def write(self, mapping, attn_mat):
         """ mapping: B x n_elems x n_nodes
@@ -207,16 +206,29 @@ class BIGMem(nn.Module):
 
 
 class IndexGraph(object):
-    """ i_to_m: (list of numpy array (int)) groups x m_nodes,
-                i_to_m[g][0] ~ i_to_m[g][m_nodes/i_nodes - 1] for i0,
-                i_to_m[g][m_nodes/i_nodes] ~ i_to_m[g][2*m_nodes/i_nodes - 1] for i1,
-                ...
-        m_to_i: groups x m_nodes
-    """
-    def __init__(self, groups, i_nodes, m_nodes):
-        self.i_to_m = [np.random.permutation(m_nodes) for _ in groups]
-        self.m_to_i =
-        self.
+    def __init__(self, index_groups, per_group_indices, memory_nodes, beta=1.0):
+        self.index_groups = index_groups
+        self.per_group_indices = per_group_indices
+        self.memory_nodes = memory_nodes
+        self.beta = beta
+
+        edges = [np.random.permutation(self.memory_nodes) for _ in range(self.index_groups)]
+        edges = np.stack(edges, axis=0)
+        self.edges = np.reshape(edges, (self.index_groups, self.per_group_indices,
+                                        self.memory_nodes // self.per_group_indices))
+
+        self.weights = np.random.exponential(self.beta, self.edges.shape)
+
+    @property
+    def edges_m_from_i(self):
+        # (return) (tensor) index_groups x 2 (for pair (m, i)) x memory_nodes
+        i = np.reshape(np.arange(self.per_group_indices), (1, self.per_group_indices, 1))
+        i = np.tile(i, (self.index_groups, 1, self.memory_nodes // self.per_group_indices))
+        i = np.reshape(i, (self.index_groups, self.memory_nodes))
+        m = np.reshape(self.edges, (self.index_groups, self.memory_nodes))
+        m_from_i = np.stack([m, i], axis=1)  # inidex_groups x 2 x memory_nodes
+        return m_from_i
+
 
 class MemoryGraph(object):
     pass
