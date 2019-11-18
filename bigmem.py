@@ -8,35 +8,33 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def sparse_op1(indices1, values1, indices2, values2, N1, N2):
+def sparse_op1(indices1, values1, indices2, values2, N2):
     """ indices1: (LongTensor) D1 x D2 x D3 x K1 (K1 out of N1)
         values1: (FloatTensor) D1 x D2 x D3 x K1 (K1 out of N1)
         indices2: (LongTensor) D3 x N1 x K2 (K2 out of N2)
         values2: (FloatTensor) D3 x N1 x K2 (K2 out of N2)
-        (return) out: (tensor) D1 x D2 x K2
+        (return) out: (tensor) D1 x D2 x K2 (K2 out of N1*N2)
     """
     indices = []
     values = []
     for ind1, val1, ind2, val2 in zip(indices1.unbind(dim=2), values1.unbind(dim=2),  # D1 x D2 x K1
                                       indices2.unbind(dim=0), values2.unbind(dim=0)):  # N1 x K2
-        V1 = val1.unsqueeze(-1)  # D1 x D2 x K1 x 1
-        V2 = val2.index_select(0, ind1.reshape(-1)).reshape(ind1.size() + (ind2.size(-1),))  # D1 x D2 x K1 x K2
-        V = V1 * V2  # D1 x D2 x K1 x K2
-        values.append(V.reshape(-1))  # (D1*D2*K1*K2)
+        V1 = val1.reshape(-1, 1)  # (D1*D2*K1) x 1
+        V2 = val2.index_select(0, ind1.reshape(-1))  # (D1*D2*K1) x K2
+        V = torch.reshape(V1 * V2, -1)  # (D1*D2*K1*K2)
+        values.append(V)
 
-        I_D1 = torch.arange(ind1.size(0)).reshape(-1, 1, 1, 1).repeat(1, ind1.size(1), ind1.size(2), ind2.size(-1))  # D1 x D2 x K1 x K2
-        I_D2 = torch.arange(ind1.size(1)).reshape(1, -1, 1, 1).repeat(ind1.size(0), 1, ind1.size(2), ind2.size(-1))  # D1 x D2 x K1 x K2
-        I_K1 = ind1.unsqueeze(-1).repeat(1, 1, 1, ind2.size(-1))  # D1 x D2 x K1 x K2
+        I_D1 = torch.arange(ind1.size(0)).reshape(-1, 1).repeat(1, V.numel() // ind1.size(0)).reshape(-1)  # (D1*D2*K1*K2)
+        I_D2 = torch.arange(ind1.size(1)).reshape(1, -1, 1).repeat(ind1.size(0), 1, ind1.size(2) * ind2.size(-1)).reshape(-1)  # (D1*D2*K1*K2)
         I_K2 = ind2.index_select(0, ind1.reshape(-1)).reshape(ind1.size() + (ind2.size(-1),))  # D1 x D2 x K1 x K2
-        I = torch.stack([I_D1, I_D2, I_K1, I_K2], dim=0)  # 4 x D1 x D2 x K1 x K2
-        indices.append(I.reshape(4, -1))  # 4 x (D1*D2*K1*k2)
+        I = torch.stack([I_D1, I_D2, I_K2], dim=0)  # 3 x D1 x D2 x K1 x K2
+        indices.append(I.reshape(3, -1))  # 3 x (D1*D2*K1*k2)
 
-    indices = torch.cat(indices, dim=1)  # 4 x (D3*D1*D2*K1*K2)
+    indices = torch.cat(indices, dim=1)  # 3 x (D3*D1*D2*K1*K2)
     values = torch.cat(values, dim=0)  # (D3*D1*D2*K1*K2)
-    out = torch.sparse_coo_tensor(indices, values,
-                                  size=(indices1.size(0), indices1.size(1), N1, N2)).coalesce()  # (sparse) D1 x D2 x N1 x N2
+    out = torch.sparse_coo_tensor(indices, values, size=(indices1.size(0), indices1.size(1), N2)).coalesce()  # (sparse) D1 x D2 x N2
 
-    
+
 
 
 
