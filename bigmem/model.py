@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from bigmem.utils import Lambda, gelu, scaled_dot_softmax, to_sparse, transpose, spspmm, batch_spspmm, mse, \
+from bigmem.utils import Lambda, gelu, scaled_dot_softmax, to_sparse, transpose, spspmm, mse, \
     sparse_topk, center, to_numpy, to_tensor, sample_multi_graphs
 
 
@@ -145,7 +145,8 @@ class BIGMem(nn.Module):
         e2n_val, e2n_ind = to_sparse(e2n_val, e2n_ind, batch_size * num_elems, self.num_nodes)
 
         # nodes -> elements
-        n2e_val, n2e_ind = transpose(e2n_val, e2n_ind, self.num_nodes, batch_size * num_elems)
+        wide_e2n_ind = torch.stack([e2n_ind[0], e2n_ind[1] + e2n_ind[0] / num_elems * self.num_nodes], 0)
+        n2e_val, wide_n2e_ind = transpose(e2n_val, wide_e2n_ind, self.num_nodes, batch_size * num_elems)
 
         write_loss = 0
         elems_toto_nodes = []
@@ -160,8 +161,10 @@ class BIGMem(nn.Module):
             elems_toto_nodes.append((e22n_val, e22n_ind))
 
             # elements -> nodes -> nodes -> elements
-            e222e_val, e222e_ind = batch_spspmm(e22n_val, e22n_ind, n2e_val, n2e_ind, batch_size,
-                                                num_elems, self.num_nodes, num_elems)
+            wide_e22n_ind = torch.stack([e22n_ind[0], e22n_ind[1] + e22n_ind[0] / num_elems * self.num_nodes], 0)
+            e222e_val, wide_e222e_ind = spspmm(e22n_val, wide_e22n_ind, n2e_val, wide_n2e_ind,
+                                          batch_size * num_elems, batch_size * self.num_nodes, batch_size * num_elems)
+            e222e_ind = torch.stack([wide_e222e_ind[0], wide_e222e_ind[1] % num_elems], 0)
             e222e = torch.sparse_coo_tensor(e222e_ind, e222e_val, size=(batch_size * num_elems, num_elems))
             e222e = e222e.to_dense().reshape(batch_size, num_elems, num_elems)
 

@@ -16,14 +16,14 @@ def test_bigmem():
     intermediate_dims = 512
 
     graph_memory = BIGMem(hidden_dims=hidden_dims, index_sizes=index_sizes, index_dims=index_dims,
-                          num_relations=num_relations, mem_dims=mem_dims, intermediate_dims=intermediate_dims)
+                          num_relations=num_relations, mem_dims=mem_dims, intermediate_dims=intermediate_dims).cuda()
 
     # test `anchor()`
-    elem_hiddens = torch.randn(batch_size, num_elems, hidden_dims)
+    elem_hiddens = torch.randn(batch_size, num_elems, hidden_dims).cuda()
     elems_to_nodes = graph_memory.anchor(elem_hiddens)
 
     # test `write()`
-    elems_to_elems = torch.rand(batch_size, heads, num_elems, num_elems)
+    elems_to_elems = torch.rand(batch_size, heads, num_elems, num_elems).cuda()
     write_loss, elems_toto_nodes = graph_memory.write(elems_to_elems, elems_to_nodes)
 
     # test `read()`

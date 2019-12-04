@@ -62,16 +62,6 @@ def spspmm(val1, ind1, val2, ind2, m, k, n):
     return val, ind
 
 
-def batch_spspmm(val1, ind1, val2, ind2, b, m, k, n):
-    ind1 = ind1.clone()
-    ind2 = ind2.clone()
-    ind1[1] = ind1[1] + ind1[0] / m * k
-    ind2[0] = ind2[0] + ind2[1] / n * k
-    ind, val = torch_sparse.spspmm(ind1, val1, ind2, val2, b * m, b * k, b * n)
-    ind[1] = ind[1] % n
-    return val, ind
-
-
 def mse(a, b):
     return torch.mean(torch.sum((a - b)**2, (1,2)))
 

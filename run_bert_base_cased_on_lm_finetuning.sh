@@ -1,8 +1,9 @@
 #!/bin/bash
 
-TRAIN_FILE=./datasets/wikitext-2/wiki.train.raw
-TEST_FILE=./datasets/wikitext-2/wiki.test.raw
-TASK_NAME=/LM_FineTuning
+TRAIN_FILE=./datasets/wikitext-103-raw/wiki.train.raw
+TEST_FILE=./datasets/wikitext-103-raw/wiki.test.raw
+TASK_NAME=LM_FineTuning_wiki103
+OUTPUT_DIR=./output/$TASK_NAME
 
 python run_lm_finetuning.py \
   --model_type bert \
@@ -12,6 +13,7 @@ python run_lm_finetuning.py \
   --train_data_file $TRAIN_FILE \
   --eval_data_file $TEST_FILE \
   --mlm \
-  --per_gpu_train_batch_size 32 \
-  --num_train_epochs 1.0 \
-  --output_dir /tmp/$TASK_NAME/
+  --per_gpu_train_batch_size 4 \
+  --per_gpu_eval_batch_size 4 \
+  --num_train_epochs 5.0 \
+  --output_dir $OUTPUT_DIR
